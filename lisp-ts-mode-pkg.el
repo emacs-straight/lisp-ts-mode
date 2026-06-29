@@ -1,0 +1,2 @@
+;; Generated package description from lisp-ts-mode.el  -*- mode: lisp-data; no-byte-compile: t; lexical-binding:t -*-
+(define-package "lisp-ts-mode" "0.2.0.0.20260627.0" "lisp-mode with tree-sitter support" '((emacs "30.2") (cond-star "0") (compat "31")) :commit "dc9fcbe59ed28517d28d9dd331b9070bbc29496c" :authors '(("zach shaftel" . "zach@shaf.tel")) :maintainer '("zach shaftel" . "zach@shaf.tel") :keywords '("lisp" "languages" "tree-sitter") :url "https://codeberg.org/zshaftel/lisp-ts-mode")
