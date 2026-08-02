@@ -5,7 +5,7 @@
 ;; Author: zach shaftel <zach@shaf.tel>
 ;; Maintainer: zach shaftel <zach@shaf.tel>
 ;; Created: May 14, 2026
-;; Version: 0.3.0
+;; Version: 0.3.2
 ;; Keywords: lisp, languages, tree-sitter
 ;; URL: https://codeberg.org/zshaftel/lisp-ts-mode
 ;; Package-Requires: ((emacs "30.2") cond-star (compat "31"))
@@ -597,7 +597,13 @@ whitespace of the output."
            (cons :tag "Choose based on context"
                  (string :tag "String used inside a ~<~:> directive"
                          :default "~:@_~")
-                 (string :tag "String used anywhere else" :default "~@"))))
+                 (string :tag "String used anywhere else" :default "~@")))
+  :safe (lambda (v)
+          (or (symbolp v)
+              (stringp v)
+              (and (consp v)
+                   (stringp (car v))
+                   (stringp (cdr v))))))
 
 (defcustom lisp-ts-mode-format-indent-predicate
   (rx bos "format_group" eos)
@@ -615,7 +621,8 @@ entire format string, indent relative to the opening \" +
                         "\\`format_\\(?:group\\|string\\)\\'")
                  (function :tag "A function to match nodes")
                  (regexp :tag "A regexp matching the node's type"
-                         :default "\\`format_group\\'")))
+                         :default "\\`format_group\\'"))
+  :safe #'stringp)
 
 (defcustom lisp-ts-mode-format-indent-tilde-relative nil
   "Determines which column is used as a basis for format string indentation.
@@ -625,18 +632,31 @@ directive; otherwise it's relative to the directive character itself ({,
 [, ( or <). This affects both the contents of the paired directive, and
 the indentation of the closing directive (}, ], ) or >) relative to the
 opener when the closer's ~ is the first non whitespace character on a
-line. Example (with `lisp-ts-mode-format-group-indent-offset' = 1):
+line. As a special case, if the value is the symbol `end', the closing
+directive is indented relative to the opening ~, but the contents are
+indented relative to the opening directive character. Example (with
+`lisp-ts-mode-format-group-indent-offset' = 1):
 
 nil:
 ~:@{~
     ~A~
   ~}
 
+\\+`end':
+~:@{~
+    ~A~
+~}
+
 non-nil:
 ~:@{~
  ~A~
-~}"
-  :type 'boolean)
+~}
+"
+  :type
+  '(choice (const :tag "Indent relative to the ~" t)
+           (const :tag "Indent relative to the directive" nil)
+           (const :tag "End relative to ~, otherwise to the directive" end))
+  :safe #'symbolp)
 
 (defcustom lisp-ts-mode-format-group-indent-offset 1
   "Additional columns of indentation when indenting inside paired directives.
@@ -651,7 +671,8 @@ With a value of 0:
   ~{
    ~A
   ~}"
-  :type 'integer)
+  :type 'integer
+  :safe #'integerp)
 
 (defcustom lisp-ts-mode-format-string-indent-offset 1
   ;; when adjusting the example, remember the \ shifts the " right by one
@@ -670,7 +691,8 @@ You can set this to the value of `most-negative-fixnum' to always indent
 non-nested directives to the start of the line."
   :type `(choice (const :tag "Always flush to the leftmost column"
                         ,most-negative-fixnum)
-                 (integer :tag "Offset from string quote")))
+                 (integer :tag "Offset from string quote"))
+  :safe #'integerp)
 
 (defconst lisp-ts-mode--format-pprint-logical-block-query
   (when (fboundp 'ts-query-compile)
@@ -723,9 +745,9 @@ format_string node which contains point. Return the column to indent to."
       ((/= (ts-node-start ender) (point))
        ;; not indenting the closing directive so indent relative to
        ;; the opener
-       (goto-char (if lisp-ts-mode-format-indent-tilde-relative
-                      (ts-node-start starter)
-                    (1- (ts-node-end starter))))
+       (goto-char (if (memq lisp-ts-mode-format-indent-tilde-relative '(nil end))
+                      (1- (ts-node-end starter))
+                    (ts-node-start starter)))
        (+ (current-column) lisp-ts-mode-format-group-indent-offset))
       ((not lisp-ts-mode-format-indent-tilde-relative)
        (goto-char (ts-node-end starter))
