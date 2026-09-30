@@ -64,16 +64,21 @@
 (add-to-list 'ts-language-source-alist
              '(common-lisp
                "https://codeberg.org/zshaftel/tree-sitter-cl-syntax"
-               :commit "dd2290d2a2480f4d865c57ed541dc714645c386b"
+               :commit "1b46b7cf12b41d40c886e33ce96500934d0aa3b5"
                :source-dir "grammars/cl/src")
              t)
 
 (add-to-list 'ts-language-source-alist
              '(cl-format
                "https://codeberg.org/zshaftel/tree-sitter-cl-syntax"
-               :commit "dd2290d2a2480f4d865c57ed541dc714645c386b"
+               :commit "1b46b7cf12b41d40c886e33ce96500934d0aa3b5"
                :source-dir "grammars/format/src")
              t)
+
+(when (boundp 'ts-language-display-name-alist) ;31.1, i think
+  (add-to-list 'ts-language-display-name-alist '(common-lisp . "Common Lisp"))
+  (add-to-list 'ts-language-display-name-alist
+               '(cl-format . "Common Lisp FORMAT")))
 
 (when (boundp 'ts-major-mode-remap-alist)
   (add-to-list 'ts-major-mode-remap-alist '(lisp-mode . lisp-ts-mode)))
@@ -453,10 +458,24 @@ and the character's name is given the face
    ;; complexes will have their whole and imaginary parts get the face
    ;; separately. highlighting the entire expression #C(1/3 99.1) with
    ;; font-lock-number-face seems weird to me.
-   `((real) @font-lock-number-face)
+   (condition-case nil
+       ;; get fancy on newer grammar versions
+       (ts-query-compile 'common-lisp
+                         `([(rational ["/" "R"] :? @font-lock-delimiter-face)
+                            (float ["E" "F" "L" "S" "D"] :? @font-lock-delimiter-face)]
+                           @font-lock-number-face)
+                         t)
+     (ts-query-error `((real) @font-lock-number-face)))
    :feature 'bits
    :override 'prepend
-   `([(bit_vector) (rational)] @lisp-ts-mode--fontify-bits)
+   (condition-case nil
+       (ts-query-compile 'common-lisp
+                         ;; we can make the query more precise with the newer
+                         ;; grammar
+                         `([(bit_vector) (rational ["#B" "#R"])]
+                           @lisp-ts-mode--fontify-bits)
+                         t)
+     (ts-query-error `([(bit_vector) (rational)] @lisp-ts-mode--fontify-bits)))
    :feature 'symbol
    :override 'prepend
    `((symbol_tokens [(single_escape) @font-lock-escape-face
@@ -489,9 +508,9 @@ and the character's name is given the face
                  ",." @lisp-ts-mode-comma-dot]))
    :feature 'reader-macro
    :override 'prepend
-   `(["#." @lisp-ts-mode-read-eval
-      "#+" @lisp-ts-mode-positive-read-conditional
-      "#-" @lisp-ts-mode-negative-read-conditional])))
+   `("#." @lisp-ts-mode-read-eval
+     "#+" @lisp-ts-mode-positive-read-conditional
+     "#-" @lisp-ts-mode-negative-read-conditional)))
 
 (defun lisp-ts-mode--format-font-lock-rules ()
   "Return `treesit-font-lock-settings' for `lisp-ts-format-support-mode'."
@@ -632,11 +651,7 @@ because it doesn't verify that the new ranges don't overlap."
         (newranges ()))
     (pcase-dolist (`(,lo . ,hi) (cdr prange))
       (when (> hi lo)
-        ;; (pulse-momentary-highlight-region lo hi)
-        ;; (sit-for 0.5)
-        (push (cons (marker-position lo)
-                    (marker-position hi))
-              newranges))
+        (push (cons (marker-position lo) (marker-position hi)) newranges))
       (when kill-markers
         (set-marker lo nil)
         (set-marker hi nil)))
@@ -1080,12 +1095,35 @@ character."
                              "deftransform"
                              "deftransforms"
                              "defoptimizer"
-                             "defoptimizers"
                              "define-source-transform")
-                '([(symbol) (list)] @optimizer))))
+                '([(symbol) (list)] @optimizer))
+      ,(funcall make-query "defoptimizers"
+                '((_)                   ;skip the optimizer type
+                  :anchor (list) @optimizer))))
   "Query used to generate `imenu' list in `lisp-ts-mode'.")
 
+(declare-function truncate-string-ellipsis "mule-util")
+(defun lisp-ts-mode--imenu-node-text (node)
+  "Return NODE's text to use in imenu.
+List nodes are truncated to at most the first two elements."
+  (if (ts-node-match-p node "list")
+      (let ((child (ts-node-child node 0 t))
+            (pieces ())
+            (nodes 2))
+        (while (and child (plusp nodes))
+          (unless (ts-node-match-p child "comment")
+            (decf nodes)
+            (push (ts-node-text child t) pieces))
+          (setq child (ts-node-next-sibling child t)))
+        (concat "(" (string-join (nreverse pieces) " ")
+                (when child
+                  (require 'mule-util)
+                  (truncate-string-ellipsis))
+                ")"))
+    (ts-node-text node t)))
+
 (defun lisp-ts-mode--imenu ()
+  "Generate an `imenu' index for `lisp-ts-mode' buffers."
   (defvar imenu-use-markers)
   (setq lisp-ts-mode--imenu-query
         (ts-query-compile 'common-lisp lisp-ts-mode--imenu-query))
@@ -1094,23 +1132,44 @@ character."
                                       nil nil nil t))
       (pcase-exhaustive cgroup
         (`((operator . ,op-node) (,type . ,name-node))
-         (push (cons (concat (ts-node-text op-node) " " (ts-node-text name-node))
-                     (let ((pos (ts-node-start (ts-node-parent op-node))))
-                       (if imenu-use-markers
-                           (copy-marker pos t)
-                         pos)))
-               (alist-get type alist)))))
+         (let ((whole-defun (ts-node-parent op-node)))
+           (unless (ts-parent-until whole-defun "quote") ;skip quoted forms
+             (push (list op-node name-node (ts-node-start whole-defun))
+                   (alist-get type alist)))))))
     (mapcar (pcase-lambda (`(,capture . ,entries))
-              (cons (pcase capture
-                      ((or 'function 'generic) "Functions")
-                      ((or 'struct 'class 'condition 'type-specifier) "Types")
-                      ('variable "Variables")
-                      ('pattern "Patterns")
-                      ;; not sure where to put setf-expander
-                      ((or 'macro 'setf-expander) "Macros")
-                      ('special-operator "Special Operators")
-                      ('optimizer "Optimizer"))
-                    entries))
+              (let ((face 'font-lock-keyword-face))
+                (cons (pcase capture
+                        ((or 'function 'generic)
+                         (setq face 'font-lock-function-name-face)
+                         "Functions")
+                        ((or 'struct 'class 'condition 'type-specifier)
+                         (setq face 'font-lock-type-face)
+                         "Types")
+                        ('variable
+                         (setq face 'font-lock-variable-name-face)
+                         "Variables")
+                        ('pattern "Patterns")
+                        ;; not sure where to put setf-expander
+                        ((or 'macro 'setf-expander) "Macros")
+                        ('special-operator "Special Operators")
+                        ('optimizer
+                         (setq face 'font-lock-function-name-face)
+                         "Optimizer"))
+                      (let ((fprop `(:weight bold :inherit ,face)))
+                        (mapcar (pcase-lambda (`(,op ,name ,pos))
+                                  (cons (concat (eval-when-compile
+                                                  (propertize "[" 'face 'shadow))
+                                                (propertize (ts-node-text op t)
+                                                            'face 'font-lock-keyword-face)
+                                                (eval-when-compile
+                                                  (propertize "]" 'face 'shadow))
+                                                " "
+                                                (propertize (lisp-ts-mode--imenu-node-text name)
+                                                            'face fprop))
+                                        (if imenu-use-markers
+                                            (copy-marker pos t)
+                                          pos)))
+                                entries)))))
             alist)))
 
 
