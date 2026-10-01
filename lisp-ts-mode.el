@@ -600,11 +600,11 @@ definition of `sexp' is based on its entry in
 ;; `treesit-range-settings', which `gaudy-cl-mode' has to bypass
 (defun lisp-ts-mode--find-parser-at (pos parser-list)
   "Find the first treesit parser in PARSER-LIST whose range contains POS."
-  (car (any (lambda (parser)
-              (any (lambda (range)
-                     (<= (car range) pos (cdr range)))
-                   (ts-parser-included-ranges parser)))
-            parser-list)))
+  (car (member-if (lambda (parser)
+                    (any (lambda (range)
+                           (<= (car range) pos (cdr range)))
+                         (ts-parser-included-ranges parser)))
+                  parser-list)))
 
 (defun lisp-ts-mode--parsers-strictly-in-region (parser-list beg end)
   "Filter PARSER-LIST to those whose ranges fall strictly between BEG and END."
@@ -913,9 +913,14 @@ for at point with `lisp-ts-mode--find-parser-at'."
 triggers FORMAT string indentation. ENDPOS, if supplied, is the position
 where indentation stops, defaulting to the end of the sexp."
   (interactive () lisp-ts-mode)
-  (let ((inhibit-message t))           ;indent-region is loud, indent-sexp isn't
-    (indent-region (save-excursion (backward-prefix-chars) (point))
-                   (or endpos (save-excursion (forward-sexp) (point))))))
+  (if lisp-ts-mode-format-indent-predicate
+      (let ((inhibit-message t))       ;indent-region is loud, indent-sexp isn't
+        (indent-region (save-excursion (backward-prefix-chars) (point))
+                       (or endpos (save-excursion (forward-sexp) (point)))))
+    ;; `indent-sexp' is superior to `indent-region-line-by-line' because it
+    ;; keeps a running ppss, so forward to that if FORMAT indentation is
+    ;; disabled
+    (indent-sexp endpos)))
 
 (defun lisp-ts-mode-indent-line-wrapper (orig)
   "Used in `lisp-ts-mode' as `:around' advice on `indent-line-function'."
